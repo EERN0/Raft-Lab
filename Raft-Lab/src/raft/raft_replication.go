@@ -2,10 +2,20 @@ package raft
 
 import "time"
 
+type LogEntry struct {
+	Term         int         // log entry的任期
+	CommandValid bool        // 有效命令将被执行
+	Command      interface{} // 具体命令
+}
+
 // 心跳、日志同步rpc请求参数
 type AppendEntriesArgs struct {
 	Term     int
 	LeaderId int
+
+	PrevLogIndex int        // leader日志中的前一个条目的索引，检查follower日志是否一致
+	PrevLogTerm  int        // leader前一条日志的任期
+	Entries      []LogEntry // 需要复制到follower日志中的新日志。可以是多个日志条目，也可以是空的（心跳）
 }
 
 // 心跳、日志同步rpc请求的返回值
@@ -14,7 +24,7 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-// 回调，接收方收到心跳后执行该回调
+// 回调   接收方(follower)收到leader发来的心跳、日志复制rpc请求后，执行该回调函数
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -32,9 +42,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.becomeFollowerLocked(args.Term)
 	}
 
+	// leader前一条日志索引 > 接收方本地日志总和，日志不匹配
+	if args.PrevLogIndex > len(rf.log) {
+		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Follower log too short, Len:%d <= Prev:%d", args.LeaderId, len(rf.log), args.PrevLogIndex)
+		return
+	}
+	// 本地日志的term 是否 等于 日志同步请求的term
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Prev log not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
+		return
+	}
+
+	// 前面都没问题，本地同步leader的日志
+	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	reply.Success = true
+	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", args.PrevLogIndex, args.PrevLogIndex+len(args.Entries))
+
 	// 重置选举超时时间
 	rf.resetElectionTimerLocked()
-	reply.Success = true
 }
 
 // 发送发送心跳/日志同步请求的rpc，回调函数处理后，把响应结果存入reply

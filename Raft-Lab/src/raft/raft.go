@@ -79,6 +79,12 @@ type Raft struct {
 	currentTerm int // 任期
 	votedFor    int // -1: 在currentTerm任期没有投任何人
 
+	log []LogEntry // 每个peer节点本地的日志
+
+	// leader中使用的，每个peer的日志视图
+	nextIndex  []int
+	matchIndex []int
+
 	electionStart   time.Time     // 选举起始时间
 	electionTimeout time.Duration // 选举随机超时时间
 }
@@ -125,9 +131,9 @@ func (rf *Raft) becomeLeaderLocked() {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (PartA).
-    rf.mu.Lock()
-    defer rf.mu.Unlock()
-    return rf.currentTerm, rf.role == Leader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.currentTerm, rf.role == Leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -177,7 +183,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -224,7 +229,6 @@ func (rf *Raft) contextLostLocked(role Role, term int) bool {
 	return !(role == rf.role && term == rf.currentTerm)
 }
 
-
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -246,6 +250,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1
+
+	// 空日志，类似链表虚拟头节点，减少边界判断
+	rf.log = append(rf.log, LogEntry{})
+
+	// 初始化leader's view，有多少个peer就有多少个view
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
