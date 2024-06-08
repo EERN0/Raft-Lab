@@ -20,6 +20,19 @@ func (rf *Raft) isElectionTimeoutLocked() bool {
 	return time.Since(rf.electionStart) > rf.electionTimeout
 }
 
+// 判断候选者Candidate的日志是否比当前节点rf的日志更新
+func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
+	l := len(rf.log)
+	lastIndex, lastTerm := l-1, rf.log[l-1].Term
+	LOG(rf.me, rf.currentTerm, DVote, "Compare last log, Me: [%d]T%d, Candidate: [%d]T%d", lastIndex, lastTerm, candidateIndex, candidateTerm)
+	// 当前节点最新日志条目的任期 (lastTerm) 与候选者的任期 (candidateTerm) 不同，任期大的节点日志更新
+	if lastTerm != candidateTerm {
+		return lastTerm > candidateTerm
+	}
+	// 任期相同，通过索引比较日志的新旧
+	return lastIndex > candidateIndex
+}
+
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -29,6 +42,10 @@ type RequestVoteArgs struct {
 	Term int
 	// 候选者id
 	CandidateId int
+	// 最后一条日志索引
+	LastLogIndex int
+	// 最后一条日志任期
+	LastLogTerm int
 }
 
 // example RequestVote RPC reply structure.
@@ -51,11 +68,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
-
+	reply.VoteGranted = false
 	// rpc请求的term小于当前节点的term，拒绝这个请求
 	if args.Term < rf.currentTerm {
 		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject voted, higher term, T%d>T%d", args.CandidateId, rf.currentTerm, args.Term)
-		reply.VoteGranted = false
 		return
 	}
 	if args.Term > rf.currentTerm {
@@ -65,11 +81,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 检查当前节点rf是否投过票
 	if rf.votedFor != -1 {
 		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject, Already voted S%d", args.CandidateId, rf.votedFor)
-		reply.VoteGranted = false
 		return
 	}
 
-	// 响应节点 投给 要票rpc请求节点一票
+	// 当前节点rf的日志比候选者candidate（要票者）的日志更新
+	if rf.isMoreUpToDateLocked(args.LastLogIndex, args.LastLogTerm) {
+		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject Vote, Candidate's log less up-to-date", args.CandidateId)
+		return
+	}
+	// 接收方节点rf 投给 要票rpc请求节点一票
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
 	rf.resetElectionTimerLocked()
@@ -161,6 +181,7 @@ func (rf *Raft) startElection(term int) {
 		return
 	}
 
+	l := len(rf.log)
 	for peer := 0; peer < len(rf.peers); peer++ {
 		// 是自己，先给自己投一票
 		if peer == rf.me {
@@ -168,9 +189,12 @@ func (rf *Raft) startElection(term int) {
 			continue
 		}
 
-		args := &RequestVoteArgs{ // 要票rpc请求参数
-			Term:        rf.currentTerm,
-			CandidateId: rf.me,
+		// Candidate要票rpc请求参数
+		args := &RequestVoteArgs{
+			Term:         rf.currentTerm,
+			CandidateId:  rf.me,
+			LastLogIndex: l - 1,
+			LastLogTerm:  rf.log[l-1].Term,
 		}
 
 		go askVoteFromPeer(peer, args)
