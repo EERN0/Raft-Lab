@@ -2,6 +2,8 @@ package raft
 
 import "time"
 
+// 如果两个节点的日志在相同的索引位置上的任期号也相同，认为这两日志相同，且从日志开头到这个索引位置之间的日志也完全相同
+// 日志项条目由任期和命令组成
 type LogEntry struct {
 	Term         int         // log entry的任期
 	CommandValid bool        // 有效命令将被执行
@@ -42,6 +44,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.becomeFollowerLocked(args.Term)
 	}
 
+	// 日志不匹配：日志的索引位置 或 任期 不同
 	// leader前一条日志索引 > 接收方本地日志总和，日志不匹配
 	if args.PrevLogIndex > len(rf.log) {
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Follower log too short, Len:%d <= Prev:%d", args.LeaderId, len(rf.log), args.PrevLogIndex)
@@ -68,11 +71,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-// 对除自己外的peer 发送心跳/日志同步请求
+// leader对follower 发送心跳/日志同步请求
 func (rf *Raft) startReplication(term int) bool {
-	// 定义发送给peer心跳/日志同步请求方法的逻辑（接收请求和处理响应）
+	// leader 发送给 peer 心跳/日志复制 请求方法的逻辑（接收请求和处理响应）
 	replicateToPeer := func(peer int, args *AppendEntriesArgs) {
-		// 回调函数中把响应结果放到reply中
+		// 向指定的peer发送 AppendEntries rpc请求，把响应结果放到reply中
 		reply := &AppendEntriesReply{}
 		ok := rf.sendAppendEntries(peer, args, reply)
 
@@ -82,12 +85,27 @@ func (rf *Raft) startReplication(term int) bool {
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Lost or crashed", peer)
 			return
 		}
-		// 判断响应的任期 和 当前节点rf的任期
+		//   peer（角色是follower）返回的任期 reply.Term 大于当前任期，leader退位成为follower
 		if reply.Term > rf.currentTerm {
 			rf.becomeFollowerLocked(reply.Term)
 			return
 		}
 
+		// 处理日志不匹配的情况（两个日志的索引或者任期不同）
+		if !reply.Success {
+			idx, term := args.PrevLogIndex, args.PrevLogTerm
+			// raft中，一段连续的相同任期的日志条目要么全部匹配，要么全部不匹配。日志不匹配，回退日志索引，找到前面任期不同的日志或者移动到日志的起始位置
+			for idx > 0 && rf.log[idx].Term == term {
+				idx--
+			}
+			// 更新leader的nextIndex[peer]为当前任期term的第一个日志条目索引，下一次从该位置开始发送日志条目
+			rf.nextIndex[peer] = idx + 1
+			LOG(rf.me, rf.currentTerm, DLog, "Log not matched in %d, Update next=%d", args.PrevLogIndex, rf.nextIndex[peer])
+			return
+		}
+		// follower 成功追加了日志条目，更新matchIndex和nextIndex
+		rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries) // follower已匹配的日志条目最后的索引
+		rf.nextIndex[peer] = rf.matchIndex[peer] + 1                // leader下一次发送日志条目的索引
 	}
 
 	rf.mu.Lock()
@@ -100,13 +118,21 @@ func (rf *Raft) startReplication(term int) bool {
 	}
 
 	for peer := 0; peer < len(rf.peers); peer++ {
+		// leader更新自己维护的follower日志视图
 		if rf.me == peer {
+			rf.matchIndex[peer] = len(rf.log) - 1
+			rf.nextIndex[peer] = len(rf.log)
 			continue
 		}
 
+		prevIdx := rf.nextIndex[peer] - 1
+		prevTerm := rf.log[prevIdx].Term
 		args := &AppendEntriesArgs{
-			Term:     term,
-			LeaderId: rf.me,
+			Term:         term,
+			LeaderId:     rf.me,
+			PrevLogIndex: prevTerm,
+			PrevLogTerm:  prevTerm,
+			Entries:      rf.log[prevIdx+1:],
 		}
 		// 对每个peer发送rpc请求
 		go replicateToPeer(peer, args)
@@ -114,7 +140,7 @@ func (rf *Raft) startReplication(term int) bool {
 	return true
 }
 
-// leader定期向所有从节点发送心跳或日志复制请求，维持leader地位。仅在给定term任期内有效
+// leader定期向所有从节点发送心跳、日志同步请求，维持leader地位。仅在给定term任期内有效
 func (rf *Raft) replicationTicker(term int) {
 	for !rf.killed() {
 

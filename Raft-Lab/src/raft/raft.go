@@ -79,11 +79,11 @@ type Raft struct {
 	currentTerm int // 任期
 	votedFor    int // -1: 在currentTerm任期没有投任何人
 
-	log []LogEntry // 每个peer节点本地的日志
+	log []LogEntry // 每个节点本地的日志。日志索引相同+日志任期相同 ==> 日志相同（从日志开头到索引位置的日志都相同）
 
-	// leader中使用的，每个peer的日志视图
-	nextIndex  []int
-	matchIndex []int
+	// 仅在leader中使用，表示每个peer节点的日志视图
+	nextIndex  []int // leader尝试下一次从索引nextIndex[peer]给peer发送日志复制请求（包含一个或多个日志条目）
+	matchIndex []int // 每个节点已经复制的最高日志项的索引
 
 	electionStart   time.Time     // 选举起始时间
 	electionTimeout time.Duration // 选举随机超时时间
@@ -125,6 +125,12 @@ func (rf *Raft) becomeLeaderLocked() {
 
 	LOG(rf.me, rf.currentTerm, DLeader, "Become Leader in T%d", rf.currentTerm)
 	rf.role = Leader
+
+	// rf当选leader，初始化leader节点中维护的peers日志视图
+	for peer := 0; peer < len(rf.peers); peer++ {
+		rf.nextIndex[peer] = len(rf.log)
+		rf.matchIndex[peer] = 0
+	}
 }
 
 // return currentTerm and whether this server
