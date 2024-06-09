@@ -31,7 +31,7 @@ const (
 	electionTimeoutMax time.Duration = 400 * time.Millisecond
 
 	// 发送心跳/日志同步的时间间隔，小于选举超时下界
-	replicateInterval time.Duration = 200 * time.Millisecond
+	replicateInterval time.Duration = 100 * time.Millisecond
 )
 
 type Role string
@@ -201,19 +201,32 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // command will ever be committed to the Raft log, since the leader
 // may fail or lose an election. even if the Raft instance has been killed,
 // this function should return gracefully.
-//
+
 // the first return value is the index that the command will appear at
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
+// 返回值: 新命令在日志中的索引位置, 当前任期, 是否为Leader
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	// Your code here (PartB).
+	// 只有Leader节点能够接收来自客户端的请求并将其作为日志条目追加到日志中
+	// 一旦客户端的请求被附加到了Leader节点的日志中，Leader节点会将这些请求复制给其他节点，并在多数节点确认后提交这些请求
 
-	return index, term, isLeader
+	// 非Leader，无法接受客户端的请求
+	if rf.role != Leader {
+		return 0, 0, false
+	}
+	// 是Leader，将命令附加到节点的日志中
+	rf.log = append(rf.log, LogEntry{
+		CommandValid: true,
+		Command:      command,
+		Term:         rf.currentTerm,
+	})
+	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", len(rf.log)-1, rf.currentTerm)
+
+	return len(rf.log) - 1, rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -280,7 +293,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.electionTicker()
-	go rf.applylication()	// 日志应用
+	// 日志应用
+	go rf.applylication()
 
 	return rf
 }

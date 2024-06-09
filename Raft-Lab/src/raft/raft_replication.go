@@ -49,9 +49,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// 日志不匹配：日志的索引位置 或 任期 不同
-	// leader前一条日志索引 > 接收方本地日志总和，日志不匹配
-	if args.PrevLogIndex > len(rf.log) {
-		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Follower log too short, Len:%d <= Prev:%d", args.LeaderId, len(rf.log), args.PrevLogIndex)
+	// leader前一条日志索引 >= 当前节点的日志长度，本地节点rf（follower）很久都没收到日志，直接返回
+	if args.PrevLogIndex >= len(rf.log) {
+		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Follower's log too short, Length:%d <= Leader's log PrevLogIndex:%d", args.LeaderId, len(rf.log), args.PrevLogIndex)
 		return
 	}
 	// 本地日志的term 是否 等于 日志同步请求的term
@@ -110,9 +110,15 @@ func (rf *Raft) startReplication(term int) bool {
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Lost or crashed", peer)
 			return
 		}
-		//   peer（角色是follower）返回的任期 reply.Term 大于当前任期，leader退位成为follower
+		// peer（角色是follower）返回的任期 reply.Term 大于当前任期，leader退位成为follower
 		if reply.Term > rf.currentTerm {
 			rf.becomeFollowerLocked(reply.Term)
+			return
+		}
+
+		// 检查节点rf的context是否改变
+		if rf.contextLostLocked(Leader, term) {
+			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
 			return
 		}
 
@@ -125,7 +131,7 @@ func (rf *Raft) startReplication(term int) bool {
 			}
 			// 更新leader的nextIndex[peer]为当前任期term的第一个日志条目索引，下一次从该位置开始发送日志条目
 			rf.nextIndex[peer] = idx + 1
-			LOG(rf.me, rf.currentTerm, DLog, "Log not matched in %d, Update next=%d", args.PrevLogIndex, rf.nextIndex[peer])
+			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at %d, try next=%d", peer, args.PrevLogIndex, rf.nextIndex[peer])
 			return
 		}
 		// follower 成功追加了日志条目，更新matchIndex和nextIndex
@@ -163,7 +169,7 @@ func (rf *Raft) startReplication(term int) bool {
 		args := &AppendEntriesArgs{
 			Term:         term,
 			LeaderId:     rf.me,
-			PrevLogIndex: prevTerm,
+			PrevLogIndex: prevIdx,
 			PrevLogTerm:  prevTerm,
 			Entries:      rf.log[prevIdx+1:],
 			LeaderCommit: rf.commitIndex,
