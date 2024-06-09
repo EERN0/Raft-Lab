@@ -30,8 +30,8 @@ type AppendEntriesReply struct {
 	Success bool
 
 	// follower告诉leader自己的日志大致的位置
-	ConfilictIndex int
-	ConfilictTerm  int
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 // 回调   接收方(follower)收到leader发来的心跳、日志复制rpc请求后，执行该回调函数
@@ -52,20 +52,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.becomeFollowerLocked(args.Term)
 	}
 
+	// 只要认可对方是leader就要重置选举时钟，不管日志匹配是否成功，避免leader和follower匹配日志时间过长
+	defer rf.resetElectionTimerLocked()
+
 	// 日志不匹配：日志的索引位置 或 任期 不同
 	// 1、leader前一条日志索引 超出 follower 的日志范围，表示leader的日志比follower的多
 	if args.PrevLogIndex >= len(rf.log) {
 		// follower日志少了, 设置ConfilictTerm为无效任期 0, ConfilictIndex为len(rf.log)———下次直接让leader发送这条日志之后的所有日志条目，同步follower的日志
-		reply.ConfilictTerm = InvalidTerm
-		reply.ConfilictIndex = len(rf.log)
+		reply.ConflictTerm = InvalidTerm
+		reply.ConflictIndex = len(rf.log)
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Follower's log too short, Length:%d <= Leader's log PrevLogIndex:%d", args.LeaderId, len(rf.log), args.PrevLogIndex)
 		return
 	}
 	// 2、本地节点rf（follower）的日志任期 不等于 leader前一条日志的任期
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		// ConfilictTerm设置为Follower在Leader.PrevLogIndex处日志任期，ConfilictIndex设置为ConfilictTerm的第一条日志
-		reply.ConfilictTerm = rf.log[args.PrevLogIndex].Term
-		reply.ConfilictIndex = rf.firstLogIndexFor(reply.ConfilictTerm)
+		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+		reply.ConflictIndex = rf.firstLogIndexFor(reply.ConflictTerm)
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Prev log not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
@@ -88,8 +91,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.applyCond.Signal()
 	}
 
-	// 重置选举超时时间
-	rf.resetElectionTimerLocked()
 }
 
 // 发送发送心跳/日志同步请求的rpc，回调函数处理后，把响应结果存入reply
@@ -139,18 +140,18 @@ func (rf *Raft) startReplication(term int) bool {
 			prevNextIndex := rf.nextIndex[peer]
 
 			// 1、follower返回的冲突任期是无效任期，follower日志数量少了
-			if reply.ConfilictTerm == InvalidTerm {
+			if reply.ConflictTerm == InvalidTerm {
 				// leader下次发给follower的日志同步 PrevLogIndex 从reply.ConflictIndex-1（即follower日志的长度-1）开始，快速回退到 Follower 日志末尾
-				rf.nextIndex[peer] = reply.ConfilictIndex
+				rf.nextIndex[peer] = reply.ConflictIndex
 			} else {
 				// 2、leader和follower日志数量一样，但是任期没对上，跳过 ConfilictTerm 的所有日志
-				firstLogIndex := rf.firstLogIndexFor(reply.ConfilictTerm)
+				firstLogIndex := rf.firstLogIndexFor(reply.ConflictTerm)
 				// 根据冲突任期找到leader日志中对应任期的第一个日志条目索引，下次发的日志同步请求从firstLogIndex开始
 				if firstLogIndex != InvalidIndex {
 					rf.nextIndex[peer] = firstLogIndex + 1
 				} else {
 					// leader日志中不存在ConfilictTerm的任何日志，以follower的日志为准跳过ConflictTerm
-					rf.nextIndex[peer] = reply.ConfilictIndex
+					rf.nextIndex[peer] = reply.ConflictIndex
 				}
 
 				// 存在网络中延迟，避免超时响应的响应到达，更新rf.nextIndex
