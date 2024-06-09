@@ -28,6 +28,10 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	// follower告诉leader自己的日志大致的位置
+	ConfilictIndex int
+	ConfilictTerm  int
 }
 
 // 回调   接收方(follower)收到leader发来的心跳、日志复制rpc请求后，执行该回调函数
@@ -49,19 +53,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// 日志不匹配：日志的索引位置 或 任期 不同
-	// leader前一条日志索引 >= 当前节点的日志长度，本地节点rf（follower）很久都没收到日志，直接返回
+	// 1、leader前一条日志索引 超出 follower 的日志范围，表示leader的日志比follower的多
 	if args.PrevLogIndex >= len(rf.log) {
+		// follower日志少了, 设置ConfilictTerm为无效任期 0, ConfilictIndex为len(rf.log)———下次直接让leader发送这条日志之后的所有日志条目，同步follower的日志
+		reply.ConfilictTerm = InvalidTerm
+		reply.ConfilictIndex = len(rf.log)
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Follower's log too short, Length:%d <= Leader's log PrevLogIndex:%d", args.LeaderId, len(rf.log), args.PrevLogIndex)
 		return
 	}
-	// 本地日志的term 是否 等于 日志同步请求的term
+	// 2、本地节点rf（follower）的日志任期 不等于 leader前一条日志的任期
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		// ConfilictTerm设置为Follower在Leader.PrevLogIndex处日志任期，ConfilictIndex设置为ConfilictTerm的第一条日志
+		reply.ConfilictTerm = rf.log[args.PrevLogIndex].Term
+		reply.ConfilictIndex = rf.firstLogIndexFor(reply.ConfilictTerm)
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Prev log not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
 
 	// 前面都没问题，本地同步leader的日志
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	// 节点 currentTerm || votedFor || log改变，都需要持久化
+	rf.persistLocked()
 	reply.Success = true
 	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", args.PrevLogIndex, args.PrevLogIndex+len(args.Entries))
 
@@ -122,15 +134,13 @@ func (rf *Raft) startReplication(term int) bool {
 			return
 		}
 
-		// 处理日志不匹配的情况（两个日志的索引或者任期不同）
+		// 处理leader和follower日志不匹配的情况（索引或者任期不同）
 		if !reply.Success {
-			idx, term := args.PrevLogIndex, args.PrevLogTerm
-			// raft中，一段连续的相同任期的日志条目要么全部匹配，要么全部不匹配。日志不匹配，回退日志索引，找到前面任期不同的日志或者移动到日志的起始位置
-			for idx > 0 && rf.log[idx].Term == term {
-				idx--
+			// 1、follower返回的冲突任期是无效任期，follower日志数量少了
+			if reply.ConfilictTerm == InvalidTerm {
+				// 下次leader发送日志同步请求中PrevLogIndex从reply.ConflictIndex-1开始
+				rf.nextIndex[peer] = reply.ConfilictIndex
 			}
-			// 更新leader的nextIndex[peer]为当前任期term的第一个日志条目索引，下一次从该位置开始发送日志条目
-			rf.nextIndex[peer] = idx + 1
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at %d, try next=%d", peer, args.PrevLogIndex, rf.nextIndex[peer])
 			return
 		}

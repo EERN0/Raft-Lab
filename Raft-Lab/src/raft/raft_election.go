@@ -92,6 +92,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 接收方节点rf 投给 要票rpc请求节点一票
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
+	
+	// 节点 currentTerm || votedFor || log改变，都需要持久化
+	rf.persistLocked()
+
 	rf.resetElectionTimerLocked()
 	LOG(rf.me, rf.currentTerm, DVote, "-> S%d", args.CandidateId)
 }
