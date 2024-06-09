@@ -136,11 +136,29 @@ func (rf *Raft) startReplication(term int) bool {
 
 		// 处理leader和follower日志不匹配的情况（索引或者任期不同）
 		if !reply.Success {
+			prevNextIndex := rf.nextIndex[peer]
+
 			// 1、follower返回的冲突任期是无效任期，follower日志数量少了
 			if reply.ConfilictTerm == InvalidTerm {
-				// 下次leader发送日志同步请求中PrevLogIndex从reply.ConflictIndex-1开始
+				// leader下次发给follower的日志同步 PrevLogIndex 从reply.ConflictIndex-1（即follower日志的长度-1）开始，快速回退到 Follower 日志末尾
 				rf.nextIndex[peer] = reply.ConfilictIndex
+			} else {
+				// 2、leader和follower日志数量一样，但是任期没对上，跳过 ConfilictTerm 的所有日志
+				firstLogIndex := rf.firstLogIndexFor(reply.ConfilictTerm)
+				// 根据冲突任期找到leader日志中对应任期的第一个日志条目索引，下次发的日志同步请求从firstLogIndex开始
+				if firstLogIndex != InvalidIndex {
+					rf.nextIndex[peer] = firstLogIndex + 1
+				} else {
+					// leader日志中不存在ConfilictTerm的任何日志，以follower的日志为准跳过ConflictTerm
+					rf.nextIndex[peer] = reply.ConfilictIndex
+				}
+
+				// 存在网络中延迟，避免超时响应的响应到达，更新rf.nextIndex
+				if rf.nextIndex[peer] > prevNextIndex {
+					rf.nextIndex[peer] = prevNextIndex
+				}
 			}
+
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at %d, try next=%d", peer, args.PrevLogIndex, rf.nextIndex[peer])
 			return
 		}
