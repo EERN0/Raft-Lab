@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -161,6 +162,22 @@ func (rf *Raft) firstLogIndexFor(term int) int {
 		}
 	}
 	return InvalidIndex
+}
+
+// 将日志条目按term分段，用于leader和follower发送日志冲突时打印日志
+func (rf *Raft) logString() string {
+	var terms string
+	prevTerm := rf.log[0].Term
+	prevStart := 0
+	for i := 0; i < len(rf.log); i++ {
+		if rf.log[i].Term != prevTerm {
+			terms += fmt.Sprintf(" [%d, %d]T%d", prevStart, i-1, prevTerm)
+			prevTerm = rf.log[i].Term
+			prevStart = i
+		}
+	}
+	terms += fmt.Sprintf(" [%d, %d]T%d", prevStart, len(rf.log)-1, prevTerm)
+	return terms
 }
 
 // return currentTerm and whether this server

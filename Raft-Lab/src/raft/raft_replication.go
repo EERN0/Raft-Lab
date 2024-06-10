@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -11,6 +12,14 @@ type LogEntry struct {
 	Term         int         // log entry的任期
 	CommandValid bool        // 有效命令将被执行
 	Command      interface{} // 具体命令
+}
+
+func (args *AppendEntriesArgs) String() string {
+	return fmt.Sprintf("Leader-%d, T%d, PrevLogIdx: [%d]T%d, AppendEntries: (%d, %d], CommitLogIdx: %d", args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm,
+		args.PrevLogIndex, args.PrevLogIndex+len(args.Entries), args.LeaderCommit)
+}
+func (reply *AppendEntriesReply) String() string {
+	return fmt.Sprintf("T%d, Sucess: %v, ConflictLogIdx: [%d]T%d", reply.Term, reply.Success, reply.ConflictIndex, reply.ConflictTerm)
 }
 
 // 心跳、日志同步rpc请求参数
@@ -38,6 +47,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, rpc-Appended, Args=%v", args.LeaderId, args.String())
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
@@ -52,8 +62,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.becomeFollowerLocked(args.Term)
 	}
 
-	// 只要认可对方是leader就要重置选举时钟，不管日志匹配是否成功，避免leader和follower匹配日志时间过长
-	defer rf.resetElectionTimerLocked()
+	defer func() {
+		// 只要认可对方是leader就要重置选举时钟，不管日志匹配是否成功，避免leader和follower匹配日志时间过长
+		rf.resetElectionTimerLocked()
+
+		// 接收方(follower)打印冲突日志信息
+		if !reply.Success {
+			LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Follower Conflict: [%d]T%d", args.LeaderId, reply.ConflictIndex, reply.ConflictTerm)
+			LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, Follower log=%v", args.LeaderId, rf.logString())
+		}
+	}()
 
 	// 日志不匹配：日志的索引位置 或 任期 不同
 	// 1、leader前一条日志索引 超出 follower 的日志范围，表示leader的日志比follower的多
@@ -69,7 +87,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// ConfilictTerm设置为Follower在Leader.PrevLogIndex处日志任期，ConfilictIndex设置为ConfilictTerm的第一条日志
 		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
 		reply.ConflictIndex = rf.firstLogIndexFor(reply.ConflictTerm)
-		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, Prev log not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
+		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject Log, PrevLog not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
 
@@ -123,6 +141,7 @@ func (rf *Raft) startReplication(term int) bool {
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Lost or crashed", peer)
 			return
 		}
+		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, Append-rpc, Reply=%v", peer, reply.String())
 		// peer（角色是follower）返回的任期 reply.Term 大于当前任期，leader退位成为follower
 		if reply.Term > rf.currentTerm {
 			rf.becomeFollowerLocked(reply.Term)
@@ -160,7 +179,10 @@ func (rf *Raft) startReplication(term int) bool {
 				}
 			}
 
-			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at %d, try next=%d", peer, args.PrevLogIndex, rf.nextIndex[peer])
+			// 发送方(leader)打印冲突日志信息
+			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at PrevLogIdx=[%d]T%d, Try next PrevLogIdx=[%d]T%d",
+				peer, args.PrevLogIndex, args.PrevLogTerm, rf.nextIndex[peer]-1, rf.log[rf.nextIndex[peer]-1].Term)
+			LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, Leader log=%v", peer, rf.logString())
 			return
 		}
 		// follower 成功追加了日志条目，更新matchIndex和nextIndex
@@ -204,6 +226,7 @@ func (rf *Raft) startReplication(term int) bool {
 			LeaderCommit: rf.commitIndex,
 		}
 		// 对每个peer发送rpc请求
+		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, Append-rpc, Args=%v", peer, args.String())
 		go replicateToPeer(peer, args)
 	}
 	return true
