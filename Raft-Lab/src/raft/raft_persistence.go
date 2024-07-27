@@ -7,7 +7,7 @@ import (
 )
 
 func (rf *Raft) persistString() string {
-	return fmt.Sprintf("T%d, VotedFor: %d, Log: [0: %d]", rf.currentTerm, rf.votedFor, len(rf.log)-1)
+	return fmt.Sprintf("T%d, VotedFor: %d, Log: [0: %d]", rf.currentTerm, rf.votedFor, rf.log.size()-1)
 }
 
 // save Raft's persistent state to stable storage,

@@ -93,7 +93,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 前一条日志匹配，本地节点同步leader日志：清空arg.PrevLogIndex+1之后所有的日志，追加leader日志
 	//rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
-	rf.log.tailLog = append(rf.log.tailLog[:rf.log.idx(args.PrevLogIndex+1)], args.Entries...)
+	rf.log.tailLog = append(rf.log.tailLog[:rf.log.idx(args.PrevLogIndex)+1], args.Entries...)
 
 	// 节点 currentTerm || votedFor || log改变，都需要持久化
 	rf.persistLocked()
