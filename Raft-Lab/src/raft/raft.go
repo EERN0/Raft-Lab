@@ -94,6 +94,7 @@ type Raft struct {
 	lastApplied int           // 已经应用的日志索引
 	applyCond   *sync.Cond    // 通知日志条目应用的条件变量。新提交日志后，commitIndex > lastApplied，触发日志应用
 	applyCh     chan ApplyMsg // 管道，传递要应用到状态机的日志条目
+	snapPending bool
 
 	electionStart   time.Time     // 选举起始时间
 	electionTimeout time.Duration // 选举随机超时时间
@@ -158,19 +159,6 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.role == Leader
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (PartD).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	rf.log.doSnapshot(index, snapshot)
-
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -269,6 +257,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
+	rf.snapPending = false
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

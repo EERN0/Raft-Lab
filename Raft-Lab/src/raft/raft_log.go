@@ -123,6 +123,7 @@ func (rl *RaftLog) logString() string {
 	return terms
 }
 
+// leader执行，从应用层到raft层
 func (rl *RaftLog) doSnapshot(index int, snapshot []byte) {
 	// 全局索引index转成tailLg索引
 	idx := rl.idx(index)
@@ -136,5 +137,19 @@ func (rl *RaftLog) doSnapshot(index int, snapshot []byte) {
 		Term: rl.snapLastLogTerm,
 	})
 	newLog = append(newLog, rl.tailLog[idx+1:]...)
+	rl.tailLog = newLog
+}
+
+// follower执行，从raft层到应用层
+func (rl *RaftLog) installSnapshot(index, term int, snapshot []byte) {
+	rl.snapLastLogIdx = index
+	rl.snapLastLogTerm = term
+	rl.snapshot = snapshot
+
+	// make a new log array
+	newLog := make([]LogEntry, 0, 1)
+	newLog = append(newLog, LogEntry{
+		Term: rl.snapLastLogTerm,
+	})
 	rl.tailLog = newLog
 }
