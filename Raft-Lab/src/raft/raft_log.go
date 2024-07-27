@@ -94,6 +94,14 @@ func (rl *RaftLog) firstLogIndexFor(term int) int {
 	return InvalidIndex
 }
 
+// 获取全局日志索引logicIdx后续的日志
+func (rl *RaftLog) getTailLogs(logicIdx int) []LogEntry {
+	if logicIdx >= rl.size() {
+		return nil
+	}
+	return rl.tailLog[rl.idx(logicIdx):]
+}
+
 // 追加日志
 func (rl *RaftLog) appendLog(e LogEntry) {
 	rl.tailLog = append(rl.tailLog, e)

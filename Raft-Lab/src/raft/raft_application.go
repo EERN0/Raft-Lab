@@ -1,7 +1,7 @@
 package raft
 
 // 日志应用
-func (rf *Raft) applylication() {
+func (rf *Raft) application() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		rf.applyCond.Wait()
@@ -9,7 +9,7 @@ func (rf *Raft) applylication() {
 		entries := make([]LogEntry, 0)
 		// 需要应用的日志: [rf.lastApplied+1, ..., rf.commitIndex]
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			entries = append(entries, rf.log[i])
+			entries = append(entries, rf.log.at(i))
 		}
 		rf.mu.Unlock()
 

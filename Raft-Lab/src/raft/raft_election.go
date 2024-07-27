@@ -23,8 +23,8 @@ func (rf *Raft) isElectionTimeoutLocked() bool {
 
 // 判断候选者Candidate的日志是否比当前节点rf的日志更新
 func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
-	l := len(rf.log)
-	lastIndex, lastTerm := l-1, rf.log[l-1].Term
+	l := rf.log.size()
+	lastIndex, lastTerm := l-1, rf.log.at(l-1).Term
 	LOG(rf.me, rf.currentTerm, DVote, "Compare last log, Me: [%d]T%d, Candidate: [%d]T%d", lastIndex, lastTerm, candidateIndex, candidateTerm)
 	// 当前节点最新日志条目的任期 (lastTerm) 与候选者的任期 (candidateTerm) 不同，任期大的节点日志更新
 	if lastTerm != candidateTerm {
@@ -197,7 +197,7 @@ func (rf *Raft) startElection(term int) {
 		return
 	}
 
-	l := len(rf.log)
+	l := rf.log.size()
 	for peer := 0; peer < len(rf.peers); peer++ {
 		// 是自己，先给自己投一票
 		if peer == rf.me {
@@ -210,7 +210,7 @@ func (rf *Raft) startElection(term int) {
 			Term:         rf.currentTerm,
 			CandidateId:  rf.me,
 			LastLogIndex: l - 1,
-			LastLogTerm:  rf.log[l-1].Term,
+			LastLogTerm:  rf.log.at(l - 1).Term,
 		}
 		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, AskVote-rpc, Args=%v", peer, args.String())
 
