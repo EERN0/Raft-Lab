@@ -227,7 +227,9 @@ func (rf *Raft) startReplication(term int) bool {
 				Snapshot:          rf.log.snapshot,
 			}
 			LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, SendSnap-rpc, Args=%v", peer, args.String())
+			// 发送snapshot的rpc后，不能再发送追加日志rpc
 			go rf.installToPeer(peer, rf.currentTerm, args)
+			continue
 		}
 
 		prevLogTerm := rf.log.at(prevLogIdx).Term
