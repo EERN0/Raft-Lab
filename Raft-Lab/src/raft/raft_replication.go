@@ -182,8 +182,14 @@ func (rf *Raft) startReplication(term int) bool {
 			}
 
 			// 发送方(leader)打印冲突日志信息
+			// leader下一次发给peer的日志信息，属于tailLog的日志才能取出任期（snapshot日志无法取出任期，设置为无效任期）
+			nextPrevIndex := rf.nextIndex[peer] - 1
+			nextPrevTerm := InvalidTerm
+			if nextPrevIndex >= rf.log.snapLastLogIdx {
+				nextPrevTerm = rf.log.at(nextPrevIndex).Term
+			}
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at PrevLogIdx=[%d]T%d, Try next PrevLogIdx=[%d]T%d",
-				peer, args.PrevLogIndex, args.PrevLogTerm, rf.nextIndex[peer]-1, rf.log.at(rf.nextIndex[peer]-1).Term)
+				peer, args.PrevLogIndex, args.PrevLogTerm, nextPrevIndex, nextPrevTerm)
 			LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, Leader log=%v", peer, rf.log.logString())
 			return
 		}
