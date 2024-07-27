@@ -85,7 +85,7 @@ type Raft struct {
 	currentTerm int // 任期
 	votedFor    int // -1: 在currentTerm任期没有投任何人
 
-	log []LogEntry // 每个节点本地的日志。日志索引相同+日志任期相同 ==> 日志相同（从日志开头到索引位置的日志都相同）
+	log *RaftLog // 每个节点本地的日志。日志索引相同+日志任期相同 ==> 日志相同（从日志开头到索引位置的日志都相同）
 
 	// 仅在leader中使用，表示每个peer节点的日志视图
 	nextIndex  []int // leader尝试下一次从索引nextIndex[peer]给peer发送日志复制请求（包含一个或多个日志条目）
@@ -147,37 +147,9 @@ func (rf *Raft) becomeLeaderLocked() {
 
 	// rf当选leader，初始化leader节点中维护的peers日志视图
 	for peer := 0; peer < len(rf.peers); peer++ {
-		rf.nextIndex[peer] = len(rf.log)
+		rf.nextIndex[peer] = rf.log.size()
 		rf.matchIndex[peer] = 0
 	}
-}
-
-// 找到第一条任期为term的日志
-func (rf *Raft) firstLogIndexFor(term int) int {
-	for idx, entry := range rf.log {
-		if entry.Term == term {
-			return idx
-		} else if entry.Term > term {
-			break
-		}
-	}
-	return InvalidIndex
-}
-
-// 将日志条目按term分段，用于leader和follower发送日志冲突时打印日志
-func (rf *Raft) logString() string {
-	var terms string
-	prevTerm := rf.log[0].Term
-	prevStart := 0
-	for i := 0; i < len(rf.log); i++ {
-		if rf.log[i].Term != prevTerm {
-			terms += fmt.Sprintf(" [%d, %d]T%d", prevStart, i-1, prevTerm)
-			prevTerm = rf.log[i].Term
-			prevStart = i
-		}
-	}
-	terms += fmt.Sprintf(" [%d, %d]T%d", prevStart, len(rf.log)-1, prevTerm)
-	return terms
 }
 
 // return currentTerm and whether this server
@@ -195,6 +167,10 @@ func (rf *Raft) GetState() (int, bool) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (PartD).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.log.doSnapshot(index, snapshot)
 
 }
 
@@ -223,16 +199,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return 0, 0, false
 	}
 	// 是Leader，将命令附加到节点的日志中
-	rf.log = append(rf.log, LogEntry{
+	rf.log.appendLog(LogEntry{
 		CommandValid: true,
 		Command:      command,
 		Term:         rf.currentTerm,
 	})
-	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", len(rf.log)-1, rf.currentTerm)
+	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d", rf.log.size()-1, rf.currentTerm)
 	// 节点 currentTerm || votedFor || log改变，都需要持久化
 	rf.persistLocked()
 
-	return len(rf.log) - 1, rf.currentTerm, true
+	return rf.log.size() - 1, rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -282,7 +258,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 
 	// 空日志，类似链表虚拟头节点，减少边界判断
-	rf.log = append(rf.log, LogEntry{Term: InvalidTerm})
+	// rf.log = append(rf.log, LogEntry{Term: InvalidTerm})
+	rf.log = NewLog(InvalidIndex, InvalidTerm, nil, nil)
 
 	// 初始化leader's view，有多少个peer就有多少个view
 	rf.nextIndex = make([]int, len(rf.peers))

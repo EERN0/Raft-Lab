@@ -191,7 +191,7 @@ func (rf *Raft) startReplication(term int) bool {
 
 		// 成功追加日志条目后，更新commitIndex
 		majorityMatched := rf.getMajorityIndexLocked() // 多数匹配索引
-		if majorityMatched > rf.commitIndex {
+		if majorityMatched > rf.commitIndex && rf.log[majorityMatched].Term == rf.currentTerm {
 			LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
 			rf.commitIndex = majorityMatched
 			rf.applyCond.Signal()
